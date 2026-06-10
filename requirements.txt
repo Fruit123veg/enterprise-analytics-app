@@ -1,5 +1,0 @@
-streamlit
-pandas
-openai
-psycopg2-binary
-matplotlib
