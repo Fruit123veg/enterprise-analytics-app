@@ -14,6 +14,7 @@ client = OpenAI(
     api_key=API_KEY
 )
 
+st.set_page_config(page_title="Enterprise Excel Analytics Portal", layout="wide")
 st.title("📊 Enterprise Excel Analytics Portal")
 st.write("Running Analytics on Validated Excel Data Source.")
 
@@ -43,7 +44,6 @@ except Exception as e:
     st.stop()
 
 # --- ADD INTERACTIVE MODE TOGGLE ---
-# This button sits right above the input box so the user can change modes instantly
 explain_mode = st.toggle("💡 Turn ON for Data Explanation / Turn OFF for Visual Chart", value=False)
 
 # 2. User Input Query
@@ -57,7 +57,7 @@ if user_query:
     timestamp = int(time.time())
     current_chart_filename = os.path.join(HISTORY_FOLDER, f"chart_{timestamp}.png").replace("\\", "/")
     
-    # SYSTEM INSTRUCTIONS: Forcing Pandas Manipulation over df_raw and managing the dynamic toggle modes
+    # SYSTEM INSTRUCTIONS: Explicit handling of runtime aggregation and dynamic insight generation
     prompt = f"""
     You are an expert data analyst. Your job is to output a Python Pandas aggregation snippet AND a secondary response to address the user's request.
     The raw data resides in a pre-loaded pandas DataFrame named: `df_raw`
@@ -72,13 +72,22 @@ if user_query:
        - If they do NOT specify a month, strictly DEFAULT to the current calendar month and year (Current Year: {current_year}, Current Month: {current_month}).
     2. REVENUE SELECTION: Default strictly to grouping and summing the 'retail_revenue' column. If the user explicitly types "service revenue", calculate using 'service_revenue' instead.
     3. PANDAS AGGREGATION: You must write code that aggregates the raw rows into a summary dataframe named `df`. 
+       CRITICAL CRITERIA: Your pandas snippet MUST explicitly assign its final result to a variable named 'df'. You MUST start the line with 'df = '. Do not just write a dangling statement.
        Example: `df = df_raw[filters].groupby('region')['retail_revenue'].sum().reset_index()`
 
     OUTPUT FORMAT REQUIREMENT:
     You must output your response in exactly two parts separated by a unique delimiter line: '---PLOT_CODE_START---'.
     
     CRITICAL TOGGLE LOGIC:
-    - IF CURRENT TARGET MODE IS "TEXT_EXPLANATION": Everything after '---PLOT_CODE_START---' must be a professional, text-based analytical commentary paragraph explaining the core insights, highest performing metrics, and trends found in the aggregated data. Do NOT write any plotting code.
+    - IF CURRENT TARGET MODE IS "TEXT_EXPLANATION": Everything after '---PLOT_CODE_START---' must be raw Python code that dynamically generates a string variable named `insight_text`. 
+      You must programmatically inspect `df` to extract precise, hard facts (e.g., finding the exact highest/lowest metrics and regions dynamically using idxmax() or max()) and format them into an explanatory narrative paragraph. Do NOT write static text. Do NOT write plotting code.
+      Example structure:
+      ```python
+      max_val = df.iloc[:, 1].max()
+      max_region = df.iloc[df.iloc[:, 1].idxmax()][df.columns[0]]
+      insight_text = f"The absolute highest performing region is {{max_region}} with an exact metric value of {{max_val:,.2f}}..."
+      ```
+
     - IF CURRENT TARGET MODE IS "PICTORIAL_CHART": Everything after '---PLOT_CODE_START---' must be raw Matplotlib plotting code using the aggregated dataframe named 'df'.
     
     CRITICAL TABLE VS CHART LOGIC:
@@ -124,10 +133,14 @@ if user_query:
                 with st.expander("See generated Data Filtering & Aggregation Logic"):
                     st.code(pandas_logic, language="python")
                 
-                # 1. Process data from the spreadsheet into summary structure 'df'
-                local_vars = {'df_raw': df_raw, 'pd': pd}
-                exec(pandas_logic, globals(), local_vars)
-                df = local_vars.get('df')
+                # 1. Execute pandas logic within a unified scope block to preserve variable states safely
+                exec_context = {'df_raw': df_raw, 'pd': pd, 'df': None}
+                exec(pandas_logic, exec_context, exec_context)
+                df = exec_context.get('df')
+                
+                if df is None or not isinstance(df, pd.DataFrame):
+                    st.error("Data tracking pipeline execution failed to generate a structured Summary DataFrame.")
+                    st.stop()
                 
                 # 2. Check if the user specifically forced a data grid view
                 if "table" in user_query.lower() or "grid" in user_query.lower():
@@ -136,13 +149,19 @@ if user_query:
                     st.session_state['chart_history'].append("TABLE_OUTPUT")
                     st.session_state['query_history'].append(user_query)
                 
-                # 3. Handle Mode Toggle: Explanation text vs. Chart rendering
+                # 3. Handle Mode Toggle: Dynamic Explanation text script vs. Chart rendering
                 elif explain_mode:
                     st.subheader("💡 AI Data Insight & Explanation")
-                    st.info(execution_content)
+                    
+                    # Run the logic that programmatically structures textual findings from data rows
+                    text_context = {'df': df, 'pd': pd, 'insight_text': ""}
+                    exec(execution_content, text_context, text_context)
+                    generated_insight = text_context.get('insight_text', "Analysis executed successfully, but no narrative statement variable was generated.")
+                    
+                    st.info(generated_insight)
                     
                     # Store textual explanation marker inside timeline history
-                    st.session_state['chart_history'].append(f"TEXT_EXPLAIN: {execution_content}")
+                    st.session_state['chart_history'].append(f"TEXT_EXPLAIN: {generated_insight}")
                     st.session_state['query_history'].append(user_query)
                 else:
                     with st.expander("See executed plotting code"):
@@ -150,12 +169,14 @@ if user_query:
                     
                     # Clear canvas and compile dynamic graph metrics
                     plt.close('all')
-                    plot_vars = {'df': df, 'plt': plt}
-                    exec(execution_content, globals(), plot_vars)
+                    plot_context = {'df': df, 'plt': plt, 'pd': pd}
+                    exec(execution_content, plot_context, plot_context)
                     
                     if os.path.exists(current_chart_filename):
                         st.session_state['chart_history'].append(current_chart_filename)
                         st.session_state['query_history'].append(user_query)
+                    else:
+                        st.error("Plot script finished execution, but no physical visualization image was caught.")
                 
             else:
                 st.error("Formatting structure issue. Please re-type your request.")
