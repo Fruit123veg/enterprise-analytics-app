@@ -57,7 +57,7 @@ if user_query:
     timestamp = int(time.time())
     current_chart_filename = os.path.join(HISTORY_FOLDER, f"chart_{timestamp}.png").replace("\\", "/")
     
-    # SYSTEM INSTRUCTIONS: Explicit handling of runtime aggregation and dynamic insight generation
+    # SYSTEM INSTRUCTIONS: Handling data processing, dynamic plotting, and data-backed text reporting
     prompt = f"""
     You are an expert data analyst. Your job is to output a Python Pandas aggregation snippet AND a secondary response to address the user's request.
     The raw data resides in a pre-loaded pandas DataFrame named: `df_raw`
@@ -72,20 +72,26 @@ if user_query:
        - If they do NOT specify a month, strictly DEFAULT to the current calendar month and year (Current Year: {current_year}, Current Month: {current_month}).
     2. REVENUE SELECTION: Default strictly to grouping and summing the 'retail_revenue' column. If the user explicitly types "service revenue", calculate using 'service_revenue' instead.
     3. PANDAS AGGREGATION: You must write code that aggregates the raw rows into a summary dataframe named `df`. 
-       CRITICAL CRITERIA: Your pandas snippet MUST explicitly assign its final result to a variable named 'df'. You MUST start the line with 'df = '. Do not just write a dangling statement.
-       Example: `df = df_raw[filters].groupby('region')['retail_revenue'].sum().reset_index()`
+       CRITICAL: Start directly with the assignment statement. Example: `df = df_raw[filters].groupby('region')['retail_revenue'].sum().reset_index()`
 
     OUTPUT FORMAT REQUIREMENT:
     You must output your response in exactly two parts separated by a unique delimiter line: '---PLOT_CODE_START---'.
+    Do not include standard markdown code blocks wrappers like ```python. Start directly with the text.
     
     CRITICAL TOGGLE LOGIC:
-    - IF CURRENT TARGET MODE IS "TEXT_EXPLANATION": Everything after '---PLOT_CODE_START---' must be raw Python code that dynamically generates a string variable named `insight_text`. 
-      You must programmatically inspect `df` to extract precise, hard facts (e.g., finding the exact highest/lowest metrics and regions dynamically using idxmax() or max()) and format them into an explanatory narrative paragraph. Do NOT write static text. Do NOT write plotting code.
-      Example structure:
+    - IF CURRENT TARGET MODE IS "TEXT_EXPLANATION": Everything after '---PLOT_CODE_START---' must be raw Python code that generates a string variable named `insight_text`. This code must dynamically inspect `df` to extract ALL category values inside that structure, pinpoint the highest value, the lowest value, and explicitly calculate the absolute difference between them.
+      Example structure for everything after the delimiter:
       ```python
-      max_val = df.iloc[:, 1].max()
-      max_region = df.iloc[df.iloc[:, 1].idxmax()][df.columns[0]]
-      insight_text = f"The absolute highest performing region is {{max_region}} with an exact metric value of {{max_val:,.2f}}..."
+      # List all values
+      breakdown = "\\n".join([f"- **{{row.iloc[0]}}**: {{row.iloc[1]:,.2f}}" for _, row in df.iterrows()])
+      target_col = df.columns[1]
+      max_idx = df[target_col].idxmax()
+      min_idx = df[target_col].idxmin()
+      max_val = df[target_col].max()
+      min_val = df[target_col].min()
+      diff_val = max_val - min_val
+      
+      insight_text = f"### 📊 Complete Data Overview\\n{{breakdown}}\\n\\n### 🏆 Peak vs. Low Performance\\n- **Highest Performer**: Region '{{df.loc[max_idx].iloc[0]}}' leading with **{{max_val:,.2f}}**\\n- **Lowest Performer**: Region '{{df.loc[min_idx].iloc[0]}}' trailing at **{{min_val:,.2f}}**\\n- **Performance Gap**: The difference between your highest and lowest metrics is **{{diff_val:,.2f}}**"
       ```
 
     - IF CURRENT TARGET MODE IS "PICTORIAL_CHART": Everything after '---PLOT_CODE_START---' must be raw Matplotlib plotting code using the aggregated dataframe named 'df'.
@@ -110,8 +116,6 @@ if user_query:
     - READABILITY & SPACING: Call `plt.tight_layout()` right before saving. Increase the top margin of the Y-axis by 15% using `ax.set_ylim(0, max_val * 1.15)`.
     - Clear the figure at the start using `plt.figure()`.
     - Save the plot using: `plt.savefig("{current_chart_filename}", bbox_inches="tight")`.
-
-    Do not include standard markdown code blocks wrappers like ```python. Start directly with the raw pandas statement.
     """
     
     with st.spinner("Processing Data Pipeline Execution..."):
@@ -133,13 +137,13 @@ if user_query:
                 with st.expander("See generated Data Filtering & Aggregation Logic"):
                     st.code(pandas_logic, language="python")
                 
-                # 1. Execute pandas logic within a unified scope block to preserve variable states safely
-                exec_context = {'df_raw': df_raw, 'pd': pd, 'df': None}
-                exec(pandas_logic, exec_context, exec_context)
-                df = exec_context.get('df')
+                # 1. Process data from the spreadsheet into summary structure 'df'
+                context = {'df_raw': df_raw, 'pd': pd, 'df': None}
+                exec(pandas_logic, context, context)
+                df = context.get('df')
                 
                 if df is None or not isinstance(df, pd.DataFrame):
-                    st.error("Data tracking pipeline execution failed to generate a structured Summary DataFrame.")
+                    st.error("Data pipeline did not initialize the output DataFrame variable 'df'.")
                     st.stop()
                 
                 # 2. Check if the user specifically forced a data grid view
@@ -149,18 +153,21 @@ if user_query:
                     st.session_state['chart_history'].append("TABLE_OUTPUT")
                     st.session_state['query_history'].append(user_query)
                 
-                # 3. Handle Mode Toggle: Dynamic Explanation text script vs. Chart rendering
+                # 3. Handle Mode Toggle: Explanation text vs. Chart rendering
                 elif explain_mode:
-                    st.subheader("💡 AI Data Insight & Explanation")
+                    st.subheader("💡 Real-time Data Insight & Explanation")
                     
-                    # Run the logic that programmatically structures textual findings from data rows
+                    # Execute the programmatic insight text engine block
                     text_context = {'df': df, 'pd': pd, 'insight_text': ""}
-                    exec(execution_content, text_context, text_context)
-                    generated_insight = text_context.get('insight_text', "Analysis executed successfully, but no narrative statement variable was generated.")
+                    try:
+                        exec(execution_content, text_context, text_context)
+                        generated_insight = text_context.get('insight_text', "Could not calculate dynamic narrative analysis.")
+                    except Exception as tx_err:
+                        generated_insight = f"Failed calculating contextual statistics: {tx_err}"
                     
-                    st.info(generated_insight)
+                    st.markdown(generated_insight)
                     
-                    # Store textual explanation marker inside timeline history
+                    # Store data narrative within timeline history
                     st.session_state['chart_history'].append(f"TEXT_EXPLAIN: {generated_insight}")
                     st.session_state['query_history'].append(user_query)
                 else:
@@ -169,17 +176,16 @@ if user_query:
                     
                     # Clear canvas and compile dynamic graph metrics
                     plt.close('all')
-                    plot_context = {'df': df, 'plt': plt, 'pd': pd}
-                    exec(execution_content, plot_context, plot_context)
+                    plot_vars = {'df': df, 'plt': plt}
+                    exec(execution_content, globals(), plot_vars)
                     
                     if os.path.exists(current_chart_filename):
+                        st.image(current_chart_filename, use_container_width=True)
                         st.session_state['chart_history'].append(current_chart_filename)
                         st.session_state['query_history'].append(user_query)
-                    else:
-                        st.error("Plot script finished execution, but no physical visualization image was caught.")
                 
             else:
-                st.error("Formatting structure issue. Please re-type your request.")
+                st.error("Formatting structure issue from LLM. Please re-type your request.")
                 st.write(raw_text)
                 
         except Exception as e:
@@ -200,7 +206,7 @@ if st.session_state['chart_history']:
                 st.info("📊 This query was rendered above as a clean data table view.")
             elif img_path.startswith("TEXT_EXPLAIN:"):
                 text_insight = img_path.replace("TEXT_EXPLAIN:", "").strip()
-                st.info(f"💡 **Data Insight:** {text_insight}")
+                st.info(text_insight)
             elif os.path.exists(img_path):
                 st.image(img_path, use_container_width=True)
             st.write("") 
